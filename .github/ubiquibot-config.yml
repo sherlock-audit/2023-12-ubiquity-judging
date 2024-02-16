@@ -6,8 +6,8 @@ features:
   newContributorGreeting:
     enabled: true
   publicAccessControl:
-    setLabel: true
-    fundExternalClosedIssue: true
+    setLabel: false
+    fundExternalClosedIssue: false
 
 payments:
   evmNetworkId: 100
