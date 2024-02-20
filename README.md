@@ -1,268 +1,9 @@
-# Issue H-1: UbiquityPool::redeemDollar DoS on redeeming if USDT/USDC depegs 
-
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/59 
-
-## Found by 
-0xpiken, Arz, GatewayGuardians, KingNFT, cergyk, evmboi32, fugazzi, ilchovski, shaka
-## Summary
-uAD is algorithmically dependent on its accepted collateral, which are supposed to be `LUSD` and `DAI` at first. However there is a mechanism blocking withdrawal in case the TWAP price of uAD in the metapool `uAD/3CRV` is too high. Since 3CRV also contains USDT and USDC, in case any of USDC or USDT depegging, 3CRV price against uAD will be lower. Redeeming uAD may end up temporarily locked.
-
-## Vulnerability Detail
-We can see that calling `redeemDollar` reverts if the price of uAD is above a given threshold:
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L418-L420
-
-This means that an event which causes the price of 3CRV to be below the threshold such as USDT or USDC depegging will cause redeeming to revert effectiely causing a DOS on withdrawals. 
-
-## Impact
-Temporary DOS on withdrawal because of a depeg of USDT/USDC which should be unrelated.
-
-## Code Snippet
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L418-L420
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-Remove the reliance on 3CRV, create a tricrypto pool which contains collateral tokens
-
-
-
-## Discussion
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> The issue describes about the protocol insolvancy in case of collateral depeg. It's not avoidable, that's why the protocol has borrowing function to get yield, take fees on mint and redeem, these features will hedge the risk from protocol insolvancy
-
-
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> The issue describes about the protocol insolvancy in case of collateral depeg. It's not avoidable, that's why the protocol has borrowing function to get yield, take fees on mint and redeem, these features will hedge the risk from protocol insolvancy
-
-
-
-**nevillehuang**
-
-See also #61 for a coded PoC, both talking about UAD price reliant on 3CRV
-
-**rndquu**
-
-Ok, we've already discussed it [here](https://github.com/ubiquity/ubiquity-dollar/issues/259) so the issue seems to be valid and "will fix".
-
-Not sure about the possible solution, but the following seem worth to check:
-- https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/30
-- https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/61
-- https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/141
-- https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/165
-- https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/192
-
-
-# Issue H-2: UbiquityPool::mintDollar/redeemDollar Sandwich chainlink oracle update can enable riskless arbitrage on uAD 
-
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/72 
-
-## Found by 
-Bauer, Coinstein, FastTiger, almurhasan, cergyk, fugazzi
-## Summary
-When chainlink updates the oracle price, a malicious actor can use own funds to sandwich the transaction and profit at the expense of the collateral reserve of the protocol
-
-## Vulnerability Detail
-
-We can see that the `LibUbiquityPool::update` function updates the price of a collateral, but can do so multiple times in one block:
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L519-L562
-
-Then we can deduce that calling this function before and after the underlying chainlink update inside one block will set the price two times, and enable the sandwicher to redeem more collateral than deposited, effectively risklessly extracting collateral from the protocol  
-
-### Scenario
-
-Chainlink aggregator update transaction is broadcasted to the mempool, initial price is 0.98 and will become 1.02 after the transaction. 
-
-Alice sandwiches the transaction:
-
-- Front-run by calling `UbiquityPool::mintDollar` for 1000 uAD by providing 980 DAI
-- Back-run by calling `UbiquityPool::redeemDollar` for 1000 uAD and withdrawing 1020 DAI
-
-Note: the actual withdraw of collateral is delayed, but this is not preventing this vector of attack
-
-## Impact
-Some collateral may be extracted from the protocol at each oracle update
-
-## Code Snippet
-
-## Tool used
-Manual Review
-
-## Recommendation
-Add a delay mechanism to prevent redeeming in the same block as minting, or use current delay mechanism but adapt it to ensure that the price at time of collecting is used
-
-
-
-## Discussion
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> TWAP price does not change in same block
-
-
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> TWAP price does not change in same block
-
-
-
-**rndquu**
-
-For me this is normal arbitrage. If chainlink reports the `DAI` token to equal `$1.02` then there should be less `DAI` tokens than `Dollar` tokens in the end which is basically the backrun part of the sandwich bundle described.
-
-If you take the same example described in the original issue but without the sandwich frontrun and backrun transactions you get the same logic:
-1. Chainlink updates DAI to `$1.02` (it means that the Dollar token price should be <1$ over time)
-2. Some other user redeems 1 Dollar token for 1 DAI worth `$1.02` pushing the Dollar token peg back to 1 USD
-
-**rndquu**
-
-I don't understand how exactly it harms the protocol, need a detailed example
-
-**nevillehuang**
-
-@CergyK Maybe you would want to comment and provide an example/PoC?
-
-**molecula451**
-
-@CergyK  please provide us with a reproducible PoC! with good price queries
-
-**molecula451**
-
-there is an hypothetical lack of sufficient liquidity to redeem by an honest actor (depositor) due to the nature of the arbitrage and the front run and external user could have taken the collateral, making thus the initial depositor would be unavailable to redeem his/her deposit, argument 0 fees
-
-what do you think @rndquu @gitcoindev 
-
-# Issue M-1: AmoMinter can borrow collateral more than what's free/available 
-
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/1 
-
-## Found by 
-0xAlix2, 0xadrii, 0xpiken, 14si2o\_Flint, ArmedGoose, Aymen0909, Coinstein, DMoore, Drynooo, GatewayGuardians, KupiaSec, avoloder, b0g0, blutorque, brgltd, cats, cergyk, coffiasd, ilchovski, infect3d, nobody2018, r0ck3tz, rvierdiiev, ydlee, zraxx
-## Summary
-
-AmoMinters can borrow collateral from the protocol to earn yield in external protocols like Compound, and Curve, ... This can be done using the `amoMinterBorrow` function, which sends the "amount" of collateral to the targeted AmoMinter. However, this function doesn't check the validity of the borrowed amount, i.e. it doesn't check if the protocol has enough "free" amount before going ahead and sending the collateral.
-
-## Vulnerability Detail
-
-AmoMinter can borrow a collateral amount even if it is included in an unclaimed collateral storage. So if a user calls `redeemDollar` on certain collateral, and an AmoMinter borrows the full amount of collateral, that user won't be able to call `collectRedemption`, forcing him to lose his dollar tokens for nothing in return. As the transferred "borrowed" amount won't consider the unclaimed collateral `unclaimedPoolCollateral[collateralIndex]`.
-
-```solidity
-function test_bug_noFreeCollateralCheck() public {
-    uint256 _100ETH = 100e18;
-
-    vm.prank(admin);
-    ubiquityPoolFacet.setPriceThresholds(1000000, 1000000);
-
-    assertEq(collateralToken.balanceOf(address(ubiquityPoolFacet)), 0);
-
-    vm.prank(user);
-    ubiquityPoolFacet.mintDollar(0, _100ETH, 99e18, _100ETH);
-
-    assertEq(
-        collateralToken.balanceOf(address(ubiquityPoolFacet)),
-        _100ETH
-    );
-
-    vm.prank(user);
-    ubiquityPoolFacet.redeemDollar(0, 99e18, 90e18);
-
-    assertEq(
-        collateralToken.balanceOf(address(ubiquityPoolFacet)),
-        _100ETH
-    );
-    assertEq(ubiquityPoolFacet.freeCollateralBalance(0), 2.98e18);
-
-    vm.prank(address(dollarAmoMinter));
-    ubiquityPoolFacet.amoMinterBorrow(_100ETH);
-
-    vm.roll(3);
-
-    vm.prank(user);
-    vm.expectRevert("ERC20: transfer amount exceeds balance");
-    ubiquityPoolFacet.collectRedemption(0);
-}
-```
-
-## Impact
-
-Loss of funds (dollar tokens).
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L574-L598
-
-## Tool used
-
-Manual Review + vscode
-
-## Recommendation
-
-Add the following `require` statement in the `amoMinterBorrow` function in the `LibUbiquityPool` library.
-```solidity
-require(
-    collateralAmount <= freeCollateralBalance(minterCollateralIndex),
-    "Not enough free collateral"
-);
-```
-
-
-
-## Discussion
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**0xLogos** commented:
-> amo minter is trusted, imho correctness of amo behavior is vital to protocol solvency and there's no way to safeguard against its bad behavior and keep its functionality because allowing him to withdraw all free collateral barely only protects pending withdrawls
-
-
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**0xLogos** commented:
-> amo minter is trusted, imho correctness of amo behavior is vital to protocol solvency and there's no way to safeguard against its bad behavior and keep its functionality because allowing him to withdraw all free collateral barely only protects pending withdrawls
-
-
-
-**rndquu**
-
-@gitcoindev @molecula451 
-
-AMO minters are trusted so it's basically our job to check that AMO minters don't borrow more than available.
-
-Anyway, this seems to be a quick fix one-liner (in the "recommendation" section) so I think we should fix it. 
-
-**gitcoindev**
-
-@rndquu I agree with your comment. Since we do not use AMO minters yet but can simulate and add the check. Adding Will Fix label.
-
-# Issue M-2: LibUbiquityPool::mintDollar/redeemDollar reliance on outdated TWAP oracle may be inefficient for preventing depeg 
+# Issue M-1: LibUbiquityPool::mintDollar/redeemDollar reliance on outdated TWAP oracle may be inefficient for preventing depeg 
 
 Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13 
 
 ## Found by 
-0xadrii, ArmedGoose, XDZIBEC, cergyk, osmanozdemir1, rvierdiiev, the-first-elder
+0xadrii, cergyk, osmanozdemir1, rvierdiiev
 ## Summary
 The ubiquity pool used for minting/burning uAD relies on a twap oracle which can be outdated because the underlying metapool is not updated when calling the ubiquity pool. This would mean that minting/burning will be enabled based on an outdated state when it should have been reverted and inversely 
 
@@ -364,100 +105,468 @@ I have the same impression. Since this is easy to remediate with updating of cum
  and implement it there. 
 
 
-# Issue M-3: LibTWAPOracle::setPool Dos on setPool by donating a few wei of 3CRV directly to the metapool 
+**osmanozdemir1**
 
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/14 
+Escalate
 
-## Found by 
-0xadrii, ArmedGoose, Tendency, bareli, bitsurfer, cergyk, fugazzi, hancook, infect3d, nmirchev8, nobody2018, rvierdiiev, unforgiven
-## Summary
-`LibTWAPOracle::setPool` relies on a perfect match between the initial balance of uAD and 3CRV in the pool, which means that a malicious user can front-run the admin call to `setPool` and donate a few wei of 3CRV to the pool in order to make the call revert. 
+Some duplicates of this issue fail to explain the actual root cause of it, which is internal update function being called in the beginning of every action in the underlying metapool.
 
-## Vulnerability Detail
-We can see the the admin function `LibTWAPOracle::setPool`, checks that the balances of uAD and 3CRV are perfectly equal:
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L51
+Only valid duplicates of this issue are #68, #134, and #181. They all explain the core problem about curve metapool updating mechanism and provide recommendations regarding how to update underlying pool to solve the problem.
 
-This means that a malicious user can front-run the call to setPool by donating a few wei of 3CRV directly to the metapool, in which case the balances will not match. The admin will not be able to set the pool as the function will revert
+Issues #34, #84, #92 and #187 are more related to `consult()` function returning stale value. Some of them mention general things about TWAP _(like how low volume pools affect TWAP etc)_, and provide vague explanations. However, none of them pinpoints the actual cause of this issue. They don't mention underlying metapool's updating mechanism and should not be considered as valid duplicates without finding the root cause. 
 
-## Impact
-The feature of migrating to a new pool will be DoSed temporarily, as long as the attacker keeps sending a few wei to the metapool contract
+Last 4 issues might be considered as separate group of valid issues or they might be invalidated depending on the judge's preference, but they should not be duplicates of this one. 
 
-## Code Snippet
-
-## Tool used
-Manual Review
-
-## Recommendation
-Accept a slight imbalance between the balances of uAD and 3CRV (by a few dollars), in order to make this kind of DoS economically impractical for the attacker
-
-
-
-## Discussion
+Kind regards.
 
 **sherlock-admin2**
 
-1 comment(s) were left on this issue during the judging contest.
+> Escalate
+> 
+> Some duplicates of this issue fail to explain the actual root cause of it, which is internal update function being called in the beginning of every action in the underlying metapool.
+> 
+> Only valid duplicates of this issue are #68, #134, and #181. They all explain the core problem about curve metapool updating mechanism and provide recommendations regarding how to update underlying pool to solve the problem.
+> 
+> Issues #34, #84, #92 and #187 are more related to `consult()` function returning stale value. Some of them mention general things about TWAP _(like how low volume pools affect TWAP etc)_, and provide vague explanations. However, none of them pinpoints the actual cause of this issue. They don't mention underlying metapool's updating mechanism and should not be considered as valid duplicates without finding the root cause. 
+> 
+> Last 4 issues might be considered as separate group of valid issues or they might be invalidated depending on the judge's preference, but they should not be duplicates of this one. 
+> 
+> Kind regards.
 
-**auditsea** commented:
-> The issue describes about DOSing setPool function by manipulating the Curve pool, but it's assumed that the Curve pool deployment, LP deposit, and setPool will be handled in one tx using multicall structure
+You've created a valid escalation!
 
+To remove the escalation from consideration: Delete your comment.
 
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**nevillehuang**
+
+@osmanozdemir1 I have internally discussed this with LSW and initially did deduplicated them as you mentioned. However, the watsons are technically not wrong per say by indicating an update required by using a stale time interval, so I decided to duplicate them.
+
+**osmanozdemir1**
+
+@nevillehuang Thanks for the response.
+
+I totally agree with you about watsons being technically not wrong. However, this issue is one step deeper than a regular stale price issue. Even **non-stale** prices _(in terms of time interval)_ will be incorrect because of this issue.
+
+For example let's say staleness threshold is 4 hours:
+
+```solidity
+  /*           T-4 hours         T-3 hours                                         T0 current
+                 |-----------------|---------------------------------------------------|
+                              Latest action                                   The time Ubiquity 
+                             in curve metapool                              updates & checks the price
+
+                                   |----------------------------------------------------|
+                                     Latest actions impact until now is not accounted 
+*/      
+```
+
+In an example above, staleness interval check will not revert because it is inside the staleness threshold. However, the latest action's impact on the price is never accounted. If it is a large swap or deposit, 3 hours worth of impact of this action will be huge.
+
+Staleness check is not a solution for this problem. Only solution is somehow invoking the internal update function of the underlying curve metapool. And only issues I mentioned above explains this problem.
+
+Therefore, I strongly believe those other 4 issues regarding staleness check are valid issues but separate ones.
+
+Kind regards.
+
+**0xLogos**
+
+Escalate
+
+Imho staleness part should be low and another should be invalid because of this
+
+> > A malicious user can use this to mint/burn heavily in order to depeg the coin further
+> 
+> Economically it doesn't make sense for a malicious user to do so. User is incentivised to arbitrage Dollar tokens hence even when metapool price is stale and a huge trade happens (i.e. a huge amount of Dollar tokens is minted in the Ubiquity pool) all secondary markets (uniswap, curve, etc...) will be on parity (in terms of Dollar-ANY_STABLECLON pair) after some time hence arbitrager will have to call `_update()` (when adding or removing liquidity) in the curve's metapool to make a profit.
+> 
+> Meanwhile I agree that the metapool's price can be stale but I don't understand how exactly minting "too many" Dollar tokens (keeping in mind that we get collateral in return) or burning "too many" Dollar tokens (keeping in mind that it reduces the `Dollar/USD` quote) may harm the protocol.
+
+I would also like to ask for a specific numerical example. From my understanding check against TWAP not for prevent depeg but for...
+
+> prevent unnecessary redemptions that could adversely affect the Dollar price
+
+i.e. for cases like redeeming uD when it's price above peg 1$ which is simply unprofitable because within the protocol it's still 1$.
 
 **sherlock-admin2**
 
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> The issue describes about DOSing setPool function by manipulating the Curve pool, but it's assumed that the Curve pool deployment, LP deposit, and setPool will be handled in one tx using multicall structure
-
-
-
-**rndquu**
-
-@gitcoindev @molecula451 
-
-The recommendation states to "Accept a slight imbalance between the balances of uAD and 3CRV" but this can also lead to potential DOS.
-
-I think we can simply remove [this](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L51) line.
-
-**gitcoindev**
-
-> @gitcoindev @molecula451
+> Escalate
 > 
-> The recommendation states to "Accept a slight imbalance between the balances of uAD and 3CRV" but this can also lead to potential DOS.
+> Imho staleness part should be low and another should be invalid because of this
 > 
-> I think we can simply remove [this](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L51) line.
-
-I did a research on GitHub and indeed other pool implementations just use 
-
-`require(_reserve0 > 0 && _reserve1 > 0, "No reserves");`
-
-also [some pools check for overflow](https://github.com/PatrickAlphaC/Web3Bugs/blob/00259ca226c5e470e520d3b4705b46aafe4a89ec/contracts/29/trident/contracts/pool/franchised/FranchisedHybridPool.sol#L271)
-
-therefore since 2 lines above  [this](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L51) line we check for reserves it is safe to remove this line.
-
-
-
-
-
-
-**rndquu**
-
-> > @gitcoindev @molecula451
-> > The recommendation states to "Accept a slight imbalance between the balances of uAD and 3CRV" but this can also lead to potential DOS.
-> > I think we can simply remove [this](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L51) line.
+> > > A malicious user can use this to mint/burn heavily in order to depeg the coin further
+> > 
+> > Economically it doesn't make sense for a malicious user to do so. User is incentivised to arbitrage Dollar tokens hence even when metapool price is stale and a huge trade happens (i.e. a huge amount of Dollar tokens is minted in the Ubiquity pool) all secondary markets (uniswap, curve, etc...) will be on parity (in terms of Dollar-ANY_STABLECLON pair) after some time hence arbitrager will have to call `_update()` (when adding or removing liquidity) in the curve's metapool to make a profit.
+> > 
+> > Meanwhile I agree that the metapool's price can be stale but I don't understand how exactly minting "too many" Dollar tokens (keeping in mind that we get collateral in return) or burning "too many" Dollar tokens (keeping in mind that it reduces the `Dollar/USD` quote) may harm the protocol.
 > 
-> I did a research on GitHub and indeed other pool implementations just use
+> I would also like to ask for a specific numerical example. From my understanding check against TWAP not for prevent depeg but for...
 > 
-> `require(_reserve0 > 0 && _reserve1 > 0, "No reserves");`
+> > prevent unnecessary redemptions that could adversely affect the Dollar price
 > 
-> also [some pools check for overflow](https://github.com/PatrickAlphaC/Web3Bugs/blob/00259ca226c5e470e520d3b4705b46aafe4a89ec/contracts/29/trident/contracts/pool/franchised/FranchisedHybridPool.sol#L271)
-> 
-> therefore since 2 lines above [this](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L51) line we check for reserves it is safe to remove this line.
+> i.e. for cases like redeeming uD when it's price above peg 1$ which is simply unprofitable because within the protocol it's still 1$.
 
-[This](https://github.com/PatrickAlphaC/Web3Bugs/blob/00259ca226c5e470e520d3b4705b46aafe4a89ec/contracts/29/trident/contracts/pool/franchised/FranchisedHybridPool.sol#L271) overflow check is needed because of downcasting from `uint256` to `uint128` [here](https://github.com/PatrickAlphaC/Web3Bugs/blob/00259ca226c5e470e520d3b4705b46aafe4a89ec/contracts/29/trident/contracts/pool/franchised/FranchisedHybridPool.sol#L272). I guess this is not the case for us since we don't use `uint128` in the `LibUbiquityPool`.
+You've created a valid escalation!
 
-# Issue M-4: UbiquityPool::mintDollar/redeemDollar collateral depeg will encourage using UbiquityPool to swap for better collateral 
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**nevillehuang**
+
+I agree with @osmanozdemir1 analysis. I think this issues can possibly be separated. However, what does a staleness check actually do, isn't it to invoke that particular underlying update function in the first place (which is why I validated them)?
+
+**osmanozdemir1**
+
+> I agree with @osmanozdemir1 analysis. I think this issues can possibly be separated. However, what does a staleness check actually do, isn't it to invoke that particular underlying update function in the first place (which is why I validated them)?
+
+Staleness check might revert or update underlying pool depending on how the protocol implements it. However, even if staleness check updates the underlying pool, it would only do that in case of the last action is outside of the staleness threshold. It won't update the price all the time. 
+
+Staleness check won't update the price if it **thinks the price is not stale**. The thing I was trying to point out [here](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13#issuecomment-1908782359) is that the underlying curve pool update function must be invoked all the time regardless of the staleness.
+
+**0xLogos**
+
+#181 is nice explanation, but i believe it lacks severe impact
+
+> TWAP prices are incorrect.
+
+It is view function used only to check thresholds in mint/redeem
+
+> Incorrect amounts of tokens will be minted.
+
+Mint/redeem amounts are based on chainlink oracle, not TWAP
+
+> DollarToken's may be minted or redeemed outside of the price threshold.
+
+It can happen, but there's no incentives to do it. Thresholds allow to mint/redeem uAD if it's actually profitable according to TWAP. If allowance is false-posive mint/redeem will not be profitable, if it is false-negative arb can themself update curve pool and thus update TWAP.
+
+So IMO impact here is that there is possible situation when arb is forced to  update curve pool themself in order to execute arb. But is this alone medium? And how often these situations will occur?
+
+
+
+
+
+**osmanozdemir1**
+
+Hi @0xLogos. Thanks for your comment.
+
+ > It is view function used only to check thresholds in mint/redeem
+
+Indeed it is used to check thresholds in mint/redeem. This protocol has certain threshold prices and issue #181 explains how tokens can be minted outside of these threshold. It is clearly broken core functionality.
+
+> It can happen, but there's no incentives to do it.
+
+I can interpret this sentence in another way. If there is no incentive to do it and if it is not profitable for arbitragers etc, just a regular user may get harmed. A normal user doesn't have to track all these things and doesn't need to check Curve prices since the user expects protocol to revert outside of these thresholds. 
+
+minting/redeeming uAD above 1.01 and below 0.99 is the central feature of this protocol and in my opinion it is quite clear that minting/redeeming outside of the pre-determined thresholds is a broken functionality.
+
+**CergyK**
+
+Manipulations of the TWAP oracle have a high impact because they can cause insolvency on the Pool.
+
+Indeed any redeeming/minting is done at the price indicated by chainlink. So what if the TWAP oracle is not aligned with the chainlink value? A malicious user which already has a large amount of uAD can drain the pool of the collateral
+
+**0xLogos**
+
+> just a regular user may get harmed
+
+User mistake
+
+
+I believe that "core functionality" in judging docs refers to something with obvious impact and I don't see it here, but it's for judges to decide.
+
+> A malicious user which already has a large amount of uAD can drain the pool of the collateral
+
+Don't see why it's malicious, uAD exchanged for collateral according to chainlink (fair) price, not outdated TWAP. Burning large amount of uAD will raise demand and incentivises to mint uAD for collateral and replenish pool - intended behavior.
+
+
+**osmanozdemir1**
+
+> User mistake
+
+I disagree with that. User expects the protocol act like it is stated in the docs. User is not doing something wrong or giving incorrect input. For example, with your argument, every sandwich attack would be a user mistake due to not using private mempool or not being cautious enough but we consider it as lack of slippage protection.
+
+Whole mint/redeem can be done outside of the intended thresholds with incorrect price assumptions. I don't understand how more core you want but will leave it to the judge.
+
+**nevillehuang**
+
+@Czar102 See issue #181 for a more complete issue breakdown with more thorough impact analysis (also the report I selected). I believe this is a valid medium severity issue.
+
+**0xLogos**
+
+Sandwitch attack is different. There is attacker, profit for attacker and loss for user. Here user themself making suboptimal choice, but again, he not loosing anything. Also this easier for user to prevent than sandwithcing.
+
+**Czar102**
+
+I agree with the deduplication proposed – issues #34, #84, #92 and #187 aren't describing this issue to a sufficient extent.
+
+I was planning to consider this a low (it's a low/medium borderline issue imo) because I thought there is just protocol revenue lost due to suboptimal pricing.
+
+> Indeed any redeeming/minting is done at the price indicated by chainlink. So what if the TWAP oracle is not aligned with the chainlink value? A malicious user which already has a large amount of uAD can drain the pool of the collateral
+
+@CergyK than you for this comment, this seems to be the case. If the protocol had a single oracle (maybe chainlink and TWAP integrated), there would no issues related to this discrepancy. If there was a single oracle, the uAD would be *verifiably solvent* (given that the thresholds are configured correctly), but right now, due to the possibilities of these discrepancies, there is no such a *guarantee*. Tagging @pavlovcik @gitcoindev @molecula451 @rndquu, maybe it will be a valuable modification. Would also like @CergyK to sign off on this reasoning.
+
+In real market scenarios, if the price has been radically changed, there is some market activity that will update the TWAP, so the probability of this issue having real impact is negligible, and this issue will usually have some impact on the price, nevertheless negligible. Hence, I think Medium severity is perfect for this issue.
+
+Planning to separate and invalidate #34, #84, #92 and #187 and leave other duplicates and this issue as they are.
+
+**0xLogos**
+
+Sorry, i think i've lost the point.
+
+> So what if the TWAP oracle is not aligned with the chainlink value?
+
+@CergyK TWAP is for uAD but chainlink for collateral. What do you mean they are not aligned?
+
+@Czar102 What verifiably solvent means? User with sufficient uAD can redeem and get all collateral when uAD fresh TWAP < 0.99. Why is't bad?
+
+
+
+**Czar102**
+
+> User with sufficient uAD can redeem and get all collateral when uAD fresh TWAP < 0.99. Why is't bad?
+
+@0xLogos If the Chainlink oracle displays price of uAD of $1.02 and the TWAP is $0.99, then one can redeem and they will get more for redeems ($1.02) than pay for some mints ($1.01).
+
+If one oracle was used for checking thresholds and exchange rates, it would be impossible to mint for a smaller cost than profit from redeeming.
+
+**CergyK**
+
+> Would also like @CergyK to sign off on this reasoning.
+
+Agreed, as an additional remediation to the individual TWAP issues, it would be reasonable to introduce a deviation check between the two oracles
+
+**0xArz**
+
+@Czar102 The chainlink oracle is not used for uAD, its used for the collateral. There is no uAD chainlink feed so the curve pool twap is used by checking the reserves and the price of that the twap returns does not determine the amount of the collateral tokens that the user receives, it just checks the thresholds 
+
+**0xLogos**
+
+@Czar102 But chainlink oracle not used for uAD pricing, there's no such feed. uAD price hardcoded to 1$ in the pool, only collateral chainlink feed used for calculating exchange rate assuming uAD worth 1$.
+
+
+
+**CergyK**
+
+@0xArz @0xLogos
+
+By giving the right to users to mint/redeem collateral at the price given by the feed collateral/USD, the price of uAD is actually defined by this feed, so we can safely consider that the feed is also the real price collateral/uAD. 
+
+Even though I agree with your point that the chainlink feed is not technically a uAD feed. 
+
+**0xArz**
+
+> @0xArz @0xLogos
+> 
+> By giving the right to users to mint/redeem collateral at the price given by the feed collateral/USD, the price of uAD is actually defined by this feed, so we can safely consider that the feed is also the real price collateral/uAD.
+> 
+> Even though I agree with your point that the chainlink feed is not technically a uAD feed.
+
+Its an exchange rate that will always be 1 if the collateral is pegged to $1.00 and you will only receive more or less if the collateral price changes not the uAD price. The impact here is that it might be possible to mint/redeem outside of the thresholds, i dont get how you can “drain” the collateral. 
+
+**osmanozdemir1**
+
+In the simplest way:
+
+```
+If A happens
+      do B
+```
+
+You are trying to invalidate this issue by saying the price calculation is correct while performing `do B`. 
+
+The bug is in `if A happens`. This function shouldn't be performing `do B` at all. It doesn't matter `do B` is correct or not. The function should not be in that if statement in the first place. That if statement is the most central part of this protocol. It is the decision to mint or not mint this stable token. It is the decision to burn or not burn. 
+
+I am genuinely surprised that we are still discussing the validity of a bug that directly impacts the total supply and mint/redeem decision of a stable token. uAD is a stable coin. It has certain rules to mint/burn. That rule is broken.
+
+
+**0xArz**
+
+@osmanozdemir1 Your report describes this issue really well although this comment https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13#issuecomment-1945710223 about the impact is wrong. 
+
+
+
+> uAD is a stable coin. It has certain rules to mint/burn. That rule is broken.
+
+This is true but this still doesnt affect the price of uAD until its sold right? If the reserves were 99 and 101 then everyone is able to mint, the arbitrage bot would only need ~1 uAD to rebalance to the pool but what if an attacker just mints the max(50k uAD), isnt this the same problem? Although this rule is broken, you are not stealing anything, the protocol doesnt become insolvent or anything.  Would be great if we could confirm with the sponsor what problem could this cause
+
+**osmanozdemir1**
+
+Just an example in terms of what problem could this cause:
+
+Let's assume TWAP price is 1.011 but the real price is 0.99.
+
+- Normally, the protocol should prevent minting and allow redeeming to maintain the peg. This way token supply will decrease and price will move towards to 1.
+- But because of the TWAP price is 1.01, it will allow minting more uAD instead of forbidding mint and allowing redeem. It will do the complete opposite, which will increase the total supply more instead of decreasing it. Which will decrease the real price more.
+
+Decision to mint/burn and increasing/decreasing token supply are most crucial things in a stable coin and these crucial actions are performed based on mint/redeem thresholds in this protocol. Possibility to mint/redeem outside of these thresholds is not an innocent issue.
+
+These thresholds will use outdated TWAP prices **nearly all the time** due to this issue because curve metapools are not highly active pools. They are not like uniswap pools. I provided both previous ubiquity metapool address and `lusd` metapool address in my issue if you want to check. **There are only few exchange actions in weeks**. That's why it is quite possible for this protocol to mint uAD instead of burn them or vice versa. People will keep minting until there is an external action in the underlying metapool that updates the TWAP, and that update might take too much time. This protocol should not wait an external action but it must update the underlying pool itself.  
+
+
+**0xArz**
+
+> * But because of the TWAP price is 1.01, it will allow minting more uAD instead of forbidding mint and allowing redeem. It will do the complete opposite, which will increase the total supply more instead of decreasing it. Which will decrease the real price more.
+
+Minting the token will not decrease the price, minting and then selling the token in the curve pool is what will decrease the price, because this isnt profitable, no one would do this. 
+
+If the real price was $0.99 then an arbitrage bot will buy uAD at a discounted price and then redeem and the pool will be updated because he just bought. 
+
+
+> Let's assume TWAP price is 1.011
+
+But the lookback window of the twap is 1 block so doesnt it just return the spot price and then use the current reserves? In that case if the price is 1.011 then an arbitrage bot will mint and sell right after the transaction that made the price 1.011.  Described here https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/20
+
+**osmanozdemir1**
+
+> If the real price was $0.99 then an arbitrage bot will buy uAD at a discounted price and then redeem and the pool will be updated because he just bought.
+
+The real price I meant here is the real TWAP price after `_update` during an exchange, which can not be known without calling an exchange action in the underlying metapool. Arbitrage bot can't know it since there is no feed that actively tracks real price. That's the whole point of the Curve metapool calling the `_update` function as first thing during any kind of exchange and this way all exchanges are done with the most updated TWAP prices.
+
+> But the lookback window of the twap is 1 block so doesnt it just return the spot price and then use the current reserves?
+
+Firstly, no it doesn't have to be 1 block. It is the difference between current timestamp and the last updated timestamp. #20 explains that it will be only 1 block if you update it in consecutive blocks. 
+
+Secondly, no it doesn't return the spot price and that's whole point of my submission. It uses `currentCumulativePrices` function, which returns [latest updated prices](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L135C1-L136C69). If underlying metapool doesn't have any new action, it will return the same cumulative price and the same timestamp even though if you call it now, or 3 hours later, or 1 day later. It directly returns the cumulative price and the timestamp at the point of the latest action in the underlying metapool. You can read the implementation code here: https://etherscan.io/address/0x5f890841f657d90e081babdb532a05996af79fe6#code
+
+**0xArz**
+
+@osmanozdemir1 I see yeah, i somehow thought that the update is done after the tx. Not sure of the impact but ig medium is appropriate for using an incorrect value to check the thresholds. 
+
+The comment by @Czar102 about the oracles is still incorrect tho. The impact of this issue is that most of the time it will use outdated twap price which can block or allow minting/redeeming.  In https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56 you would need a lot of funds just to allow/block minting and redeeming for a small amount of time which is not a problem unlike here where most of the time the wrong price will be used which will allow/block minting and redeeming
+
+
+
+**0xLogos**
+
+> But because of the TWAP price is 1.01, it will allow minting more uAD instead of forbidding mint and allowing redeem. It will do the complete opposite, which will increase the total supply more instead of decreasing it. Which will decrease the real price more.
+
+Allowing minting won't increase total supply. No one would mint just because it's allowed when it will cause losses. But one can trigger curve `_update` thus update TWAP and then redeem for profit. uAD is algotithmic stable coin and the market is assumed to operate efficiently. If bad actor wants to grief, arb will drain his funds.
+
+> Let's assume TWAP price is 1.011 but the real price is 0.99.
+
+Just bcz TWAP is stale you can't assume whatever you want. What's probability of this state? I think such curve pools indeed can be stale for long time, but only when they balanced.
+
+Sorry, I really do not want to argue, just for @Czar102 to understand and answer my points.
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/ubiquity/ubiquity-dollar/pull/893.
+
+**Czar102**
+
+After extensive discussions with the LSW and the Lead Judge, planning to resolve the escalation as previously intended (https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13#issuecomment-1945710223), as the issue doesn't only cause a DoS, but may allow for an easy value extraction strategy from the protocol, similar to the one described in #17 and duplicates.
+
+Planning to accept the first and reject the second escalation.
+
+**0xLogos**
+
+From #17
+
+> Chainlink price may be slightly outdated with regards to actual Dex state, and in that case users holding a depegging asset (let's consider DAI depegging) will use uAD to swap for the still pegged collateral: LUSD
+
+You can't swap because allowed only either mint or redeem. 
+
+Also if pool works as expected it always lose value on mint/redeem, but it takes fee to mitigate this (btw this was my escalation point for #36 that fee actually used). Assume peg within desired range: 1.009, but mint is still open because twap is stale and returns 1.011, now you can mint 1 uAD = 1.009$ for 1$. But you pay same fee as usual. And usual mint expected to be more profitable and pool takes according fees. And with that fee mint is barely profitable.
+
+This is just my thoughts about the strategy and honestly I can't think of anything profitable here. 
+
+@CergyK @nevillehuang But if there really is profitable strategy I want to learn it! 
+
+**0xArz**
+
+@Czar102 @nevillehuang @CergyK 
+https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56 is not a valid issue. You will not be able to extract anything because it DoSes the redeem, not enables. The report also clearly mentions that.  You can only make the price of uAD increase because it is impossible for the attacker to have a large amount of uAD if the only way to get it from is the curve pool, he can only make the price increase by providing a large amount of 3CRV. 
+
+I really dont undestand why we are trying to make https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17 valid again which is a completely seperate issue from this one. As @0xLogos mentioned you are only able to mint or redeem so you cant sandwich the oracle update and it is not profitable. 
+
+
+> easy value extraction strategy
+
+Can you also please tell me since when is proposing 2 consecutive blocks considered easy? 
+
+**osmanozdemir1**
+
+> @Czar102 @nevillehuang @CergyK #56 is not a valid issue. You will not be able to extract anything because it DoSes the redeem, not enables. The report also clearly mentions that. You can only make the price of uAD increase because it is impossible for the attacker to have a large amount of uAD if the only way to get it from is the curve pool, he can only make the price increase by providing a large amount of 3CRV.
+> 
+> I really dont undestand why we are trying to make #17 valid again which is a completely seperate issue from this one. As @0xLogos mentioned you are only able to mint or redeem so you cant sandwich the oracle update and it is not profitable.
+> 
+> > easy value extraction strategy
+> 
+> Can you also please tell me since when is proposing 2 consecutive blocks considered easy?
+
+I think this comment is under wrong issue and nothing to do with this one. 
+
+**nevillehuang**
+
+@0xLogos @0xArz 
+
+- For #17, you can see from [public knowledge](https://discord.com/channels/812037309376495636/1191764748216303776/1194170711644844032) that fees are intended to be zero, hence leakage is possible. Additionally, even if fees are implemented, there is no guarantees that it is sufficient to cover large price fluctuations as noted [here](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17#issuecomment-1938925185)
+
+- Proposing 2 consecutive blocks is not easy, but is a valid external vector to bypass thresholds to alternate between mint/redemption thresholds. It is possible for attacker to have externally owned uAD bought from secondary markets/minted from the protocol. Additionally, the TWAP price is influenced and reflected inaccurately since reserves are skewed similar to in #59, albeit a different cause.
+
+**0xArz**
+
+@nevillehuang The only way to obtain uAD is from the curve pool so you realistically cant have a huge amount like with 3crv. Can you also describe the whole attack path including the "profit" that the attacker gets combining https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17 and https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56? 
+
+
+
+**nevillehuang**
+
+@0xArz I believe this is untrue based on your comment [here](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56#issuecomment-1913286972) and this statement [here by sponsor](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56#issuecomment-1914240705). I think no further explanations is required from my end if not this discussion will be endless, better leave it to head of judging.
+
+**0xArz**
+
+Fine but they still have to get this uAD from somewhere but nvm. I just want you to realize how hard it is to perform an attack like this and looks like you cant even give me the attack path due to how hard the attack is. If you want to mint and then redeem you would have to manipulate the twap 2 times because as we mentioned you can either mint or redeem. This means that you would have to propose 2 consecutive blocks 2 times, if thats that easy is a 51% attack also a valid external vector to bypass thresholds? 
+
+I really dont want to argue but im tired of having to fight back because this issue is getting validated just because you can "manipulate a twap" without actually stating the profit that the attacker gets, the extremely low circumstances and the huge amount of resources that the attacker needs. 
+
+Talking about https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17 or https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56 here not https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13 which is valid i believe. 
+
+**Czar102**
+
+The outline of the attack, some details may be wrong since I haven't audited the code myself:
+1. Price of uAD was $0.99.
+2. There was a trade that put the price at $1.01. No more trades are made.
+3. The price of LUSD reported by an oracle is $1.
+4. The real price of LUSD drifted to $0.99 and a few minutes pass.
+5. The attacker deposits 1m LUSD to get 1m uAD.
+6. The attacker triggers an update in the metapool. Roughly at the same time, the Chainlink oracle heartbeat is triggered to change the LUSD price to $0.99.
+7. The TWAP is $1.01 now and the attacker can redeem 1m uAD for roughly 1.01m uAD to make a ~$10k profit.
+
+Will close this escalation today.
+
+**0xArz**
+
+@Czar102 This probably makes sense for this issue https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13 even though the likelihood is low but can you please describe the whole attack path in https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56 where you have to propose 2 consecutive blocks 2 times? Really curious to see how you would do that!
+
+**Czar102**
+
+When one of deposits/redeems are available, it's sufficient to propose 2 consecutive blocks only once.
+
+Also, simply providing liquidity after a rapid price change will help changing the operation permitted between mints and redeems.
+
+**0xArz**
+
+In that case the price of uAD has to be 1.01$ so the attacker is able to mint first. If you really think that all of these preconditions and the amount of resources that the attacker needs just to hedge a small amount of collateral is an easy value extraction strategy then i really dont know but looks like there is no point in continuing to explain why this issue is invalid so you can decide whatever you want. 
+
+**Czar102**
+
+Result:
+Medium
+Has duplicates
+
+@0xArz There are some preconditions, but the attack is possible and Medium severity is created for issues where loss of funds is limited, potentially due to many constraints.
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [osmanozdemir1](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13/#issuecomment-1908580040): accepted
+- [0xLogos](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13/#issuecomment-1912125705): rejected
+
+# Issue M-2: UbiquityPool::mintDollar/redeemDollar collateral depeg will encourage using UbiquityPool to swap for better collateral 
 
 Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17 
 
@@ -554,7 +663,143 @@ I think we should:
 @molecula451 @gitcoindev Help
 
 
-# Issue M-5: LibUbiquityPool::mintDollar/redeemDollar reliance on arbitrarily short TWAP oracle may be inefficient for preventing depeg 
+**0x3agle**
+
+> In the case of a depeg of an underlying collateral, UbiquityPool mechanism incentivises users to fill it up with the depegging collateral and taking out the better collateral.
+
+- If the uAD price is stable at $1 in the uAD-3CRV pool, then the mints (open if `uAD > $1.01`) or redeems (open if `uAD < 0.99`) won't be enabled. 
+- The chainlink oracle - is used to get the price of collateral. This price is then used to determine the amount of uAD to mint or burn, proportional to the collateral
+- The TWAP price from the curve pool will decide whether to enable mints or enable redeems
+- Hence the collateral de-pegging doesn't affect the uAD price, because we get the uAD price from the Curve pool ([ref](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L344C3-L349C11))
+
+
+
+**molecula451**
+
+The above sceneario makes much more sense on the current issue, a fix won't happen, this is most likely an invalid
+
+**0xLogos**
+
+Escalate 
+Should be invalid
+Reverting redemption if one of the collateral depegs even greater evil because now no one can redeem uD as noticed by rndquu. I think collateral depeg is a very unpleasant event and you can’t simply get away with it without loss.
+Enforcing a ratio between different collateral reserves is not good solution as it has bad consequences for market efficiency throughout the life of the protocol and will barely (arguably) mitigate losses in case of depeg.
+
+**sherlock-admin2**
+
+> Escalate 
+> Should be invalid
+> Reverting redemption if one of the collateral depegs even greater evil because now no one can redeem uD as noticed by rndquu. I think collateral depeg is a very unpleasant event and you can’t simply get away with it without loss.
+> Enforcing a ratio between different collateral reserves is not good solution as it has bad consequences for market efficiency throughout the life of the protocol and will barely (arguably) mitigate losses in case of depeg.
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**evmboi32**
+
+In my issue #144, I described that the pool can run out of collateral if the collateral gets de-pegged. This means that users cannot redeem their uAD tokens for the underlying collateral.
+
+**pavlovcik**
+
+I really feel like collateral performance is out of scope for the audit. For whatever its worth, the reason why we are starting with LUSD is because it seems to have the least points of failure out of all the stablecoins I'm aware of. The tradeoff is its slight volatility and limited ability to scale. 
+
+To me it comes across that you're saying that we need to include Liquity's entire protocol within our audit scope in order to confirm that a depeg isn't possible, and that our protocol will not fail. 
+
+If this is in scope, why not proceed with Ethereum blockchain failures? If the network gets taken over, then fraudulent transactions can be generated to withdraw all of our collateral, rendering the protocol insolvent. 
+
+etc
+
+**rndquu**
+
+> I really feel like collateral performance is out of scope for the audit. For whatever its worth, the reason why we are starting with LUSD is because it seems to have the least points of failure out of all the stablecoins I'm aware of. The tradeoff is its slight volatility and limited ability to scale.
+> 
+> To me it comes across that you're saying that we need to include Liquity's entire protocol within our audit scope in order to confirm that a depeg isn't possible, and that our protocol will not fail.
+> 
+> If this is in scope, why not proceed with Ethereum blockchain failures? If the network gets taken over, then fraudulent transactions can be generated to withdraw all of our collateral, rendering the protocol insolvent.
+> 
+> etc
+
+Collateral depeg does harm the ubiquity protocol hence it is considered a valid issue (not sure what severity though)
+
+**0xLogos**
+
+> In my issue #144, I described that the pool can run out of collateral if the collateral gets de-pegged. This means that users cannot redeem their uAD tokens for the underlying collateral.
+
+@evmboi32 Ok, depeg happens, collateral's price is now out of min/max range and redemptions are now failing (proposed in #144 solution). Then what? Wait and hope the collateral to repeg? 
+
+**nevillehuang**
+
+@CergyK Are you aware if Ubiquity has a circuit breaker for depeg events? 
+
+To me if they lack one, this will constitute as a valid medium severity finding as a depeg does directly undermine the protocols available collateral. This is in addition to the depeg scenario not being stated as an accepted risk by the protocol in the contest details (to my knowledge, most of the time, a stablecoin protocol would acknowledge the risks of a depeg scenario and even have a circuit breaker in place). 
+
+**molecula451**
+
+no we don't have circuit breaker @nevillehuang 
+
+**Czar102**
+
+The maximum divergence of the market price from the oracle feed should be within the fee charged. Planning to accept the escalation and invalidate the issue.
+
+**pavlovcik**
+
+We have our staking contract that allows us to manipulate single sided liquidity on our metapool to directly change the price right now. 
+
+**Czar102**
+
+Result:
+Invalid
+Has duplicates
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [0xLogos](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17/#issuecomment-1912166358): accepted
+
+**gstoyanovbg**
+
+@Czar102 I don't understand the argument for invalidating this report, could you explain a little more?
+
+From my point of view, I submitted report #217  because when calculating the amount of collateral a user will receive when redeeming, the real price of the dollar token is not used, but it is assumed to always be $1. Let me give an example:
+
+1. User A mints 120 dollar tokens for 120 DAI
+2. User B mints 120 dollar tokens for 120 LUSD
+3. DAI depegs with 20%. Now collateral to dollar tokens ratio is (120 + 120*0.8) / 240 = 0.9
+4. User A redeems 100 dollar tokens for 120 DAI (because the price of DAI is $0.8) and 20 dollar tokens for 20 LUSD. After this operation, there are 120 dollar tokens in circulation and 100 LUSD collateral. Now the collateral to dollar tokens ratio is 100/120 = 0.83, less than the ratio at step 3. If there are more users, those who are last would not be able to get anything for their tokens because there will be no remaining collateral. This scenario is harmful to both the protocol and the users. I want to note that in redeemDollar() we only have upper bound for the dollar token price.
+
+Wouldn't it be better to use the real price of the dollar token when determining the amount of collateral to be received in exchange for the dollar tokens? This way, each user will receive a proportional share of the available collateral, and there will not be a situation where there are dollar tokens in circulation without collateral behind them.
+
+**molecula451**
+
+> @Czar102 I don't understand the argument for invalidating this report, could you explain a little more?
+> 
+> From my point of view, I submitted report #217 because when calculating the amount of collateral a user will receive when redeeming, the real price of the dollar token is not used, but it is assumed to always be $1. Let me give an example:
+> 
+> 1. User A mints 120 dollar tokens for 120 DAI
+> 2. User B mints 120 dollar tokens for 120 LUSD
+> 3. DAI depegs with 20%. Now collateral to dollar tokens ratio is (120 + 120*0.8) / 240 = 0.9
+> 4. User A redeems 100 dollar tokens for 120 DAI (because the price of DAI is $0.8) and 20 dollar tokens for 20 LUSD. After this operation, there are 120 dollar tokens in circulation and 100 LUSD collateral. Now the collateral to dollar tokens ratio is 100/120 = 0.83, less than the ratio at step 3. If there are more users, those who are last would not be able to get anything for their tokens because there will be no remaining collateral. This scenario is harmful to both the protocol and the users. I want to note that in redeemDollar() we only have upper bound for the dollar token price.
+> 
+> Wouldn't it be better to use the real price of the dollar token when determining the amount of collateral to be received in exchange for the dollar tokens? This way, each user will receive a proportional share of the available collateral, and there will not be a situation where there are dollar tokens in circulation without collateral behind them.
+
+we will leavy it as invalid
+
+**Czar102**
+
+@gstoyanovbg thank you for the comment. We had an extensive internal discussion about this issue and some of the other ones, considerations about the exact behavior you are describing. There is a chance we may revert this escalation's resolution, if we determine that this has been a misjudgment.
+
+I would recommend looking at #60 as a core cause of this issue.
+
+**Czar102**
+
+Will consider this a valid Medium and change the escalation resolution status.
+
+# Issue M-3: LibUbiquityPool::mintDollar/redeemDollar reliance on arbitrarily short TWAP oracle may be inefficient for preventing depeg 
 
 Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/20 
 
@@ -681,182 +926,11 @@ In my experience with software development, anything time based is better implem
 
 Since there is no direct loss of funds the "high" severity doesn't seem to be correct.
 
-# Issue M-6: `mintingFee` and `redemptionFee` are not used and are not withdrawable causing protocol to miss profit off it 
+**sherlock-admin**
 
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/36 
+The protocol team fixed this issue in PR/commit https://github.com/ubiquity/ubiquity-dollar/pull/893.
 
-## Found by 
-0xnirlin, ArmedGoose, Tendency, cergyk, rvierdiiev
-## Summary
-In `UbiquityPoolFacet`, implemented in `LibUbiquityPool`, there are variables and some logic for collecting `mintingFee` and `redemptionFee`. However this logic is nonfunctional due to a fact, that these fees are not accounted anywhere and there is also no logic allowing for withdrawing / utilizing these fees. In fact, these fees just increase the contract's collateral balance, which causes the protocol to miss any profit that may come off the fees. 
-
-## Vulnerability Detail
-`UbiquityPoolFacet` allows for core operations of [minting](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L326) and [redeeming](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L399) Ubiquity dollars. Each of those operations includes a fee, which is deducted off the amount user inputs, for mint, the minted amount is decreased by `mintingFee`, which means that fee part of deposited collateral is received by the protocol without minting dollars in exchange, and in `redeem`, similarly, the amount redeemed is diminished by the fee amount, which also means, that fee part of the collateral stays in the contract instead of being fully returned for ubiquity dollars. There is also no withdraw() or similar function that could allow for extraction of the user fees - it simply stays on the contract.
-
-As an effect, the protocol gains surplus collateral stored on the contract, but this fee is not utilized or even accounted, and thus protocol cannot benefit off it.
-
-## Impact
-The protocol misses the revenue from fees which is a financial loss.
-
-## Code Snippet
-
-```solidity
-    function mintDollar(
-        uint256 collateralIndex,
-        uint256 dollarAmount,
-        uint256 dollarOutMin,
-        uint256 maxCollateralIn
-    )
-        internal
-        collateralEnabled(collateralIndex)
-        returns (uint256 totalDollarMint, uint256 collateralNeeded)
-    {
-        UbiquityPoolStorage storage poolStorage = ubiquityPoolStorage();
-
-        require(
-            poolStorage.isMintPaused[collateralIndex] == false,
-            "Minting is paused"
-        );
-
-        // update Dollar price from Curve's Dollar Metapool
-        LibTWAPOracle.update();
-        // prevent unnecessary mints
-        require(
-            getDollarPriceUsd() >= poolStorage.mintPriceThreshold,
-            "Dollar price too low"
-        );
-
-        // update collateral price
-        updateChainLinkCollateralPrice(collateralIndex);
-
-        // get amount of collateral for minting Dollars
-        collateralNeeded = getDollarInCollateral(collateralIndex, dollarAmount);
-
-        // subtract the minting fee
-        totalDollarMint = dollarAmount
-            .mul(
-                UBIQUITY_POOL_PRICE_PRECISION.sub(
-                    poolStorage.mintingFee[collateralIndex] //@audit nothing happens with the fee
-                )
-            )
-            .div(UBIQUITY_POOL_PRICE_PRECISION);
-[...]
-```
-
-```solidity
-    function redeemDollar(
-        uint256 collateralIndex,
-        uint256 dollarAmount,
-        uint256 collateralOutMin
-    )
-        internal
-        collateralEnabled(collateralIndex)
-        returns (uint256 collateralOut)
-    {
-        UbiquityPoolStorage storage poolStorage = ubiquityPoolStorage();
-
-        require(
-            poolStorage.isRedeemPaused[collateralIndex] == false,
-            "Redeeming is paused"
-        );
-
-        // update Dollar price from Curve's Dollar Metapool
-        LibTWAPOracle.update();
-        // prevent unnecessary redemptions that could adversely affect the Dollar price
-        require(
-            getDollarPriceUsd() <= poolStorage.redeemPriceThreshold,
-            "Dollar price too high"
-        );
-
-        uint256 dollarAfterFee = dollarAmount
-            .mul(
-                UBIQUITY_POOL_PRICE_PRECISION.sub(
-                    poolStorage.redemptionFee[collateralIndex] //@audit nothing happens with the fee
-                )
-            )
-            .div(UBIQUITY_POOL_PRICE_PRECISION);
-[...]
-```
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-1) Implement a variable(s) that could track accumulated fees, after each deduction add the newly deducted fees to these variables for accountability and 2) consider implementing a logic to administer these fees e.g. send them to a treasury, allow withdrawal, etc. Make sure to treat them separately from the contract balance so they are not used for minting, borrowing, or lost in any other way.
-
-
-
-## Discussion
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> The goal of fee taken for mint/redeem is to hedge the risk of price deviation
-
-
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> The goal of fee taken for mint/redeem is to hedge the risk of price deviation
-
-
-
-**rndquu**
-
-@pavlovcik 
-
-There are mint and redeem fees in the Ubiquity pool contract. Initially (as far as I remember) we planned to set those fees to 0. Right now there is no way for admin to withdraw mint and redeem fees so these fees serve (as some sherlock judge already stated) to "hedge the risk of price deviation" (i.e. locked in the pool). Should the admin be able to withdraw mint and redeem fees?
-
-**pavlovcik**
-
-> Should the admin be able to withdraw mint and redeem fees?
-
-I hadn't thought through this before. Following the approach of all of our other contracts, I think that having the flexibility to do this makes sense. However, given that I am just now hearing/thinking about this, perhaps the fee profits are abstracted away by lowering how much the "protocol owes." 
-
-A stablecoin is just a balance sheet of assets and liabilities. Assets means collateral in the bank, liabilities means how many Dollar tokens (think of these as just "I owe you" tokens to redeem $1.00 of underlying collateral.)
-
-Example: if we burn 100% of the circulating supply of "I owe you" tokens, then we "profited" 100% of the collateral, as nobody (except for us) can redeem the collateral anymore. 
-
-So I am not 100% up-to-speed on how the mint/redeem fees are implemented, but if they burn more Dollars, then technically we are making a profit. In which case, perhaps we don't need to implement "fee withdrawal". 
-
-**rndquu**
-
-> So I am not 100% up-to-speed on how the mint/redeem fees are implemented, but if they burn more Dollars, then technically we are making a profit. In which case, perhaps we don't need to implement "fee withdrawal".
-
-Technically those fees are not burning anything in terms of `ERC20.burn()` but "burning" in terms of fees:
-1. On `mintDollar()` user gets less Dollars for provided collateral with mint fee enabled
-2. On `redeemDollar` user gets less collateral for provided Dollars with redeem fee enabled
-
-So both those actions reduce the amount of "I owe you" tokens hence this is equal to "burning" them which lowers the `Dollar/USD` quote in the end.
-
-Since the contracts are upgradeable and we don't plan to withdraw fees I think we should save time and mark this issue as valid and "won't fix".
-
-@gitcoindev @molecula451 What do you guys think?
-
-**gitcoindev**
-
-> > So I am not 100% up-to-speed on how the mint/redeem fees are implemented, but if they burn more Dollars, then technically we are making a profit. In which case, perhaps we don't need to implement "fee withdrawal".
-> 
-> Technically those fees are not burning anything in terms of `ERC20.burn()` but "burning" in terms of fees:
-> 
-> 1. On `mintDollar()` user gets less Dollars for provided collateral with mint fee enabled
-> 2. On `redeemDollar` user gets less collateral for provided Dollars with redeem fee enabled
-> 
-> So both those actions reduce the amount of "I owe you" tokens hence this is equal to "burning" them which lowers the `Dollar/USD` quote in the end.
-> 
-> Since the contracts are upgradeable and we don't plan to withdraw fees I think we should save time and mark this issue as valid and "won't fix".
-> 
-> @gitcoindev @molecula451 What do you guys think?
-
-I am fine with that, let's mark as valid but won't fix.
-
-# Issue M-7: LibTWAPOracle::update Providing large liquidity will manipulate TWAP, DOSing redeem of uADs 
+# Issue M-4: LibTWAPOracle::update Providing large liquidity will manipulate TWAP, DOSing redeem of uADs 
 
 Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56 
 
@@ -941,166 +1015,239 @@ So, as far as I understand, the core issue is that the [curve metapool](https://
 
 I agree that it could be improved but disagree with the "high" severity.
 
-# Issue M-8: AccessControlFacet doesn't have ability to set admin for the role 
+**0xLogos**
 
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/90 
+Escalate
+Should be low. According to sherlock rules [here](https://docs.sherlock.xyz/audits/judging/judging#iii.-some-standards-observed). 
 
-## Found by 
-0xnirlin, Coinstein, rvierdiiev
-## Summary
-AccessControlFacet doesn't have ability to set admin for the role.
-## Vulnerability Detail
-`AccessControlFacet` is created to allow protocol manage different roles. Facet extends `AccessControlInternal`, which has different methods and uses `LibAccessControl` library to store executed roles actions.
+> If it will result in funds being inaccessible for >=1 year, then it would count as a loss of funds and be eligible for a Medium or High designation. 
 
-While `LibAccessControl` library [has `setRoleAdmin` function](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibAccessControl.sol#L140-L144), both `AccessControlFacet` and `AccessControlInternal` don't use it. And as result it's not possible to set admin for the role.
-
-Because of that only default admin will be used as parent role and protocol will not be able to granulary manage their roles.
-## Impact
-Admin for the role can't be set.
-## Code Snippet
-Provided above
-## Tool used
-
-Manual Review
-
-## Recommendation
-Add function on the facet that will set admin for the role.
-
-
-
-## Discussion
+In this issue attacker would need a large amount of funds (exactly 15 times more than curve pool reserves according to example) and control over 2 consecutive block (feasible, but very difficult) just to dos withdrawals for short time (in example 40 blocks = 12*40/60 = 8 min). 
 
 **sherlock-admin2**
 
-1 comment(s) were left on this issue during the judging contest.
+> Escalate
+> Should be low. According to sherlock rules [here](https://docs.sherlock.xyz/audits/judging/judging#iii.-some-standards-observed). 
+> 
+> > If it will result in funds being inaccessible for >=1 year, then it would count as a loss of funds and be eligible for a Medium or High designation. 
+> 
+> In this issue attacker would need a large amount of funds (exactly 15 times more than curve pool reserves according to example) and control over 2 consecutive block (feasible, but very difficult) just to dos withdrawals for short time (in example 40 blocks = 12*40/60 = 8 min). 
 
-**auditsea** commented:
-> Owner is set as a default admin, it should work
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**nevillehuang**
+
+@CergyK any comments?
+
+**0xLogos**
+
+I also want to note that the proposed solution is quite difficult to implement correctly and I believe that it is an acceptable risk to leave it as is
+
+**0x3agle**
+
+Is uAD TWAP manipulatable?
+short answer - Yes. Long answer - https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/72#issuecomment-1909410503
+Pointing out that #212's main focus is on shorting the collateral at the cost of UbiquityPool. So, it should not be a duplicate of this issue
+
+**0xLogos**
+
+@0x3agle It is manipulatable because of #20
+I think firstly this issue should be fixed (not so trivial as recommended in report)
+Also collateral tokens are "stealed" during arb
+
+**0x3agle**
+
+@0xLogos, even after addressing issue 20, the system remains susceptible to manipulation.
+
+In a standard arbitrage situation, specific conditions enable arbitrageurs to profit. 
+
+However, #212 deviates from this. Here, the attacker can intentionally trigger redemptions to acquire collateral at a lower price by influencing the uAD price. This means the attacker can engineer favorable conditions, rather than relying on chance, effectively manipulating the protocol to their advantage.
+
+**0xLogos**
+
+> The attacker opts to swap 3,000 uAD for X amount of 3CRV in the Curve pool, strategically lowering the "spot price" of uAD.
+
+from https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/72#issuecomment-1909410503
+
+Doesn't look like manipulation
+
+**0x3agle**
+
+The attacker can lower the price to enable redeems as they can now get collateral for lower price. If this isn't manipulation, then what is it?
+
+Edit: improved the wording in the comment.
+
+**0xArz**
+
+@0x3agle but why would you even need to manipulate the twap? I think your issue describes pretty much the same thing as https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/72 and the root cause is the same - collateral depegging. The attack will be possible without the TWAP manipulation(assuming the the price of uAD stays at $1.00)
 
 
+Total Spent: 97,000 LUSD (for minting uAD) + ~$50 (Slippage for swapping twice [uAD to 3CRV then 3CRV to uAD])
+Total Received: 101,000 LUSD
+Profit: ~3,800 LUSD
 
-**sherlock-admin2**
+There is no actual profit here, because 97,000 LUSD at $1.03 is worth the same as 101,000 LUSD at $0.99
 
-1 comment(s) were left on this issue during the judging contest.
+Also i believe the redeemPriceThreshold is $1.01 not $0.99, it wouldnt make sense to not allow users to redeem when the price is $1.00 right? Would be great if sponsor could confirm this
 
-**auditsea** commented:
-> Owner is set as a default admin, it should work
+I think what you are saying is that you can manipulate the price so that redeems are opened but i believe that the redeemPriceThreshold is $1.01 so you dont have to manipulate anything but just wait when the collateral drops
+
+**0xLogos**
+
+> There is no actual profit here, because 97,000 LUSD at $1.03 is worth the same as 101,000 LUSD at $0.99
+
+Good point
+
+**0x3agle**
+
+@0xArz 
+
+This is called as hedging.
+There is no profit but if the attacker held those 97,000 LUSD at $1.03 and when it drops to $0.99, the attacker loses 4%.
+
+By applying this strategy, the attacker offsets the losses at the cost of protocol. Therefore, the attacker does not lose any value.
+
+Regarding redeem threshold: you are saying that to enable redeem, the uAD should go up instead of down.
+Think about it: if uAD goes up to $1.01, there is more demand. We need the uAD to move down to $1.
+You can't control demand, you can control the supply.
+
+What will you do to level the uAD back? - Mint.
+Increase the supply to match the demand. So, we want to enable mints when uAD goes up.
+
+When uAD goes down to $0.99, the supply is more demand is less. Therefore we need to burn the uAD to match supply and demand. Hence redeem will be enabled if uAD goes below $0.99
 
 
+**0xArz**
 
-**molecula451**
+@0x3agle 
 
-this looks like an invalid because the admin can [set new roles](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/facets/AccessControlFacet.sol#L20):
+```solidity
+require(
+            getDollarPriceUsd() >= poolStorage.mintPriceThreshold,
+            "Dollar price too low"
+        );
 
-by "granting" its just the function its named grantRoles instead of set!
+```
+So you are saying that the mintPriceThreshold is $1.01? How will then users be able to mint uAD when the curve pool was just created and the price is $1.00? 
 
-the submission claims that the Facet don't use it, the admin can indeed use it!
+$0.99 for minting and $1.01 for redeeming makes more sense.
 
-@rndquu @gitcoindev 
+Same impact like in https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/72 btw
 
-**gitcoindev**
 
-Granting roles is tested at https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/test/diamond/facets/AccessControlFacet.t.sol , could we please get feedback from the Watson who submitted this issue directly or from the @auditsea perhaps something was misunderstood here?
+**0x3agle**
+
+When the pool is first deployed, users can neither mint or redeem.
+
+The demand for uAD arises. Users start buying it using 3CRV from curve pool. 
+
+So, eventually the twap will show an increased price. Let’s say $1.02
+Now, the mints on the pool will be unlocked. So users can technically mint more uAD for exact amount from Ubiquity Pool instead of 3CRV. This will lead to arbitrage, balancing the curve pool. So, now the pool will reflect the stable price of $1 for uAD.
+
+How will redeems be unlocked?
+In case a lot if uAD is minted, users will swap it for 3CRV in the curve pool. Increasing the supply of uAD in curve pool. Therefore reducing the price of uAD, let's say $0.98
+
+Now redeems will be enabled (mints are disabled) which will give you more collateral for same uAD. Again arbitrage, leading to curve pool balance. Stabilising price of uAD back to $1- disabling any mints or redeems
+
+**0xArz**
+
+hey @pavlovcik @gitcoindev @rndquu what are the correct thresholds that will be used? In the [tests](https://github.com/ubiquity/ubiquity-dollar/blob/38c3656539ae19fe9be162f566b36ec62a3e6e41/packages/contracts/test/diamond/facets/UbiquityPoolFacet.t.sol#L110) the mintPriceThreshold is set to $1.01 and the redeemPriceThreshold is set to $0.99 which means that when the price is $1.00 users will not be able to mint or redeem uAD. This doesnt really makes sense as users are supposed to be able to obtain uAD on a 1:1 ratio or is the UbiquityPool just going to be used to rebalance the price? Thank you in advance!
+
+**pavlovcik**
+
+> Also i believe the redeemPriceThreshold is $1.01 not $0.99, it wouldnt make sense to not allow users to redeem when the price is $1.00 right? Would be great if sponsor could confirm this
+
+Minting above $1.00 and redemptions below $1.00. The threshold should be adjustable so for now `redeemPriceThreshold` should be $0.99. That way a user can purchase $0.99 "dollars" from the market and then redeem them for $1.00 worth of collateral. This stabilizes the price floor. 
+
+> which means that when the price is $1.00 users will not be able to mint or redeem uAD. This doesnt really makes sense as users are supposed to be able to obtain uAD on a 1:1 ratio or is the UbiquityPool just going to be used to rebalance the price? Thank you in advance!
+
+That's a good question. We have an [application](https://dao.ubq.fi/devpool) to manage and incentivize distributed teams which offers incentives to settle payments in our Ubiquity Dollars. Assuming that there is some demand generated for our Ubiquity Dollars with our DevPool system, we should easily be able to move the price above the threshold. 
+
+If there is no demand, I think it makes sense for the protocol to not respond with incentives to change the supply. 
+
+**CergyK**
+
+> @CergyK any comments?
+
+It seems the escalation is based on the fact that a relatively short (?) duration was used in the example.
+This duration can be arbitrarily extended by using more capital.
+Overall this should not be happening in a TWAP, and for example in the TWAP as implemented in Uniswap, it is not possible to manipulate more efficiently by providing more liquidity during 2 blocks. 
 
 **rndquu**
 
-> this looks like an invalid because the admin can [set new roles](https://github.com/sherlock-audit/2023-12-ubiquity/blob/d9c39e8dfd5601e7e8db2e4b3390e7d8dff42a8e/ubiquity-dollar/packages/contracts/src/dollar/facets/AccessControlFacet.sol#L20):
-> 
-> by "granting" its just the function its named grantRoles instead of set!
-> 
-> the submission claims that the Facet don't use it, the admin can indeed use it!
-> 
-> @rndquu @gitcoindev
+> hey @pavlovcik @gitcoindev @rndquu what are the correct thresholds that will be used? In the [tests](https://github.com/ubiquity/ubiquity-dollar/blob/38c3656539ae19fe9be162f566b36ec62a3e6e41/packages/contracts/test/diamond/facets/UbiquityPoolFacet.t.sol#L110) the mintPriceThreshold is set to $1.01 and the redeemPriceThreshold is set to $0.99 which means that when the price is $1.00 users will not be able to mint or redeem uAD. This doesnt really makes sense as users are supposed to be able to obtain uAD on a 1:1 ratio or is the UbiquityPool just going to be used to rebalance the price? Thank you in advance!
 
-This issue is about setting a role admin for some other role, not about granting roles.
+Users may also get Dollar(`uAD`) tokens on secondary markets
 
-Here is the `setRoleAdmin()` [method](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibAccessControl.sol#L140-L144) which is missing in the [AccessControlFacet](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/facets/AccessControlFacet.sol) contract. Should we want to set some role to be admin for another role we would need to upgrade the contracts by adding the `setRoleAdmin()` method to facets.
+**0xLogos**
 
-I would consider this valid and "will fix".
+> It seems the escalation is based on the fact that a relatively short (?) duration was used in the example. This duration can be arbitrarily extended by using more capital. Overall this should not be happening in a TWAP, and for example in the TWAP as implemented in Uniswap, it is not possible to manipulate more efficiently by providing more liquidity during 2 blocks.
 
-**molecula451**
-
-good catch, yeah we missed the setRoleAdmin external function on  the facet
-
-**molecula451**
-
-PR Fix Confirmation: https://github.com/ubiquity/ubiquity-dollar/pull/880#event-11541346796 by @gitcoindev 
-
-# Issue M-9: LibTWAPOracle::update temporary redemption DOS if uAD/3CRV metapool has very low liquidity 
-
-Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/105 
-
-## Found by 
-cergyk
-## Summary
-If the metapool 3CRV/uAD has very low liquidity, the spot price may be deviated, which means that as a consequence the TWAP value computed is deviated, and when TWAP of uAD is too high, users withdrawals will revert. This causes a DOS on withdrawals until liquidity in the metapool becomes sufficient again
-
-## Vulnerability Detail
-We can see in `LibTWAPOracle::update`, the function `IMetapool::get_dy()` is used to retrieve the spot price on averaged balances. The amount in, for which to retrieve amount out is hardcoded to `1 ether`:
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L84-L89
-
-This means that if the liquidity in the pool is less than 0.9 ether of 3CRV, the value returned by `get_dy` will be less than 0.9 ether, and the `redeemThreshold` will not be verified:
-https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L418-L421
-
-Temporarily blocking withdrawals
-
-## Impact
-Withdrawals are temporarily blocked until enough liquidity is added to the metapool
-
-## Code Snippet
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-Use an adaptive parameter for amount in for this estimation, or do not update if the liquidity is too low
-
-
-
-## Discussion
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> get_dy is called with TWAP balances, does not depend on actual balance
-
-
-
-**sherlock-admin2**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**auditsea** commented:
-> get_dy is called with TWAP balances, does not depend on actual balance
-
-
+@pavlovcik @rndquu First of all we need to know max aceptable by protocol team time that pool can be DOSed taking into account that admin can  in any time prevent DOS by adjusting threshholds. Based on example you need 100K pool liquidity * 15 = 1.5M$ AND control over 2 block to DOS for 8 min (correct me if i am wrong)
 
 **rndquu**
 
-So if there is 0.9 Dollars and 0.9 3CRV-LP tokens in the pool then `IMetapool::get_dy()` returns 0.9 which is meant to be the `Dollar/USD` quote. The 0.9 value is still less than [redemption threshold](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibUbiquityPool.sol#L418-L421) so redemption should not be blocked unless I'm missing smth. 
-
-**rndquu**
-
-As stated by the lead senior watson: "I made a mistake, the redeem function is indeed not Dosed, the mint function can be DoSed until liquidity is sufficient. I think it's an issue because there are conditions blocking the mint/redeem based on a pool which has no overlap with the accepted collaterals. So this means that there is virtually no mechanism to incentivise providing liquidity to this pool or arbitraging it properly.".
-
-Overall if liquidity is less than `1 ether` then [this line](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L84-L89) reports an incorrect value.
-
-This seems to be a quick-fix so it makes sense to handle this case.
-
-@gitcoindev @molecula451 What do you think?
-
-**gitcoindev**
-
-> As stated by the lead senior watson: "I made a mistake, the redeem function is indeed not Dosed, the mint function can be DoSed until liquidity is sufficient. I think it's an issue because there are conditions blocking the mint/redeem based on a pool which has no overlap with the accepted collaterals. So this means that there is virtually no mechanism to incentivise providing liquidity to this pool or arbitraging it properly.".
+> > It seems the escalation is based on the fact that a relatively short (?) duration was used in the example. This duration can be arbitrarily extended by using more capital. Overall this should not be happening in a TWAP, and for example in the TWAP as implemented in Uniswap, it is not possible to manipulate more efficiently by providing more liquidity during 2 blocks.
 > 
-> Overall if liquidity is less than `1 ether` then [this line](https://github.com/sherlock-audit/2023-12-ubiquity/blob/main/ubiquity-dollar/packages/contracts/src/dollar/libraries/LibTWAPOracle.sol#L84-L89) reports an incorrect value.
-> 
-> This seems to be a quick-fix so it makes sense to handle this case.
-> 
-> @gitcoindev @molecula451 What do you think?
+> @pavlovcik @rndquu First of all we need to know max aceptable by protocol team time that pool can be DOSed taking into account that admin can in any time prevent DOS by adjusting threshholds. Based on example you need 100K pool liquidity * 15 = 1.5M$ AND control over 2 block to DOS for 8 min (correct me if i am wrong)
 
-Hi @rndquu yes, in my opinion it seems reasonable to handle this case. 
+I don't think that any time >0 seconds is an acceptable DOS duration for any protocol :)
+
+**0xLogos**
+
+> I don't think that any time >0 seconds is an acceptable DOS duration for any protocol :)
+
+Sorry but this is not true. There's no perfect systems, you have to come up with suitable threat model. 
+
+Also I believe that in order to understand the severity of the issue you need to somehow evaluate the difference between  calculating price based on time average balances and using time average price like uni v3 because this is proposed solution. (If you have control over 2 block you can do similar thing with prices swapping back and forth in 2 blocks)
+
+My point is example in report is very vague and there's need at least for more realistic PoC and ideally comparison with proposed solution.
+
+**Czar102**
+
+I believe oracle manipulation can have a more severe impact than a DoS for a few minutes, see https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13#issuecomment-1945710223.
+
+Planning to reject the escalation and leave the issue as is.
+
+**0xLogos**
+
+https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13#issuecomment-1945710223 is inaccurate
+
+**CergyK**
+
+Since we are discussing this issue, it seems #184 #197 #212 are invalid/unrelated
+
+**Czar102**
+
+Thank you @0xLogos for noting a mistake in my previous statement.
+@CergyK there seems to be no loss of funds impact here, I think it's just a DoS for a few minutes (TWAP length) and that's the risk of using TWAP. No serious loss is inflicted on anyone.
+
+We are also discussing the severity of TWAP manipulation on #59 right now, it may be relevant.
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/ubiquity/ubiquity-dollar/pull/893.
+
+**Czar102**
+
+After extensive discussions with the LSW and the Lead Judge, planning to leave this issue a Medium severity one, as it doesn't only cause a DoS, but may allow for an easy value extraction strategy from the protocol, similar to the one described in #17 and duplicates.
+
+Planning to reject the escalation and leave the issue as is.
+
+**Czar102**
+
+Result:
+Medium
+Has duplicates
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [0xLogos](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56/#issuecomment-1912048200): rejected
 
