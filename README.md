@@ -566,9 +566,15 @@ Escalation status:
 - [osmanozdemir1](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13/#issuecomment-1908580040): accepted
 - [0xLogos](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/13/#issuecomment-1912125705): rejected
 
+**sherlock-admin**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue M-2: UbiquityPool::mintDollar/redeemDollar collateral depeg will encourage using UbiquityPool to swap for better collateral 
 
 Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/17 
+
+The protocol has acknowledged this issue.
 
 ## Found by 
 cducrest-brainbot, cergyk, fugazzi, ge6a, shaka
@@ -930,6 +936,10 @@ Since there is no direct loss of funds the "high" severity doesn't seem to be co
 
 The protocol team fixed this issue in PR/commit https://github.com/ubiquity/ubiquity-dollar/pull/893.
 
+**sherlock-admin**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue M-4: LibTWAPOracle::update Providing large liquidity will manipulate TWAP, DOSing redeem of uADs 
 
 Source: https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56 
@@ -1250,4 +1260,8 @@ Escalations have been resolved successfully!
 
 Escalation status:
 - [0xLogos](https://github.com/sherlock-audit/2023-12-ubiquity-judging/issues/56/#issuecomment-1912048200): rejected
+
+**sherlock-admin**
+
+The Lead Senior Watson signed off on the fix.
 
